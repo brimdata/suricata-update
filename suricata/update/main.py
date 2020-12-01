@@ -182,15 +182,13 @@ class Fetch:
             os.makedirs(config.get_cache_dir(), mode=0o770)
         logger.info("Fetching %s." % (url))
         try:
-            tmp_dlobj = tempfile.TemporaryFile()
+            tmp_fileobj = tempfile.NamedTemporaryFile()
             net.get(
                 net_arg,
-                tmp_dlobj,
+                tmp_fileobj,
                 progress_hook=self.progress_hook)
-            tmp_fileobj=open(tmp_filename, 'w+')
-            shutil.copyfileobj(tmp_dlobj, tmp_fileobj)
+            shutil.copyfile(tmp_fileobj.name, tmp_filename)
             tmp_fileobj.close()
-            tmp_dlobj.close()
         except URLError as err:
             if os.path.exists(tmp_filename):
                 logger.warning(
