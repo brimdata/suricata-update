@@ -105,13 +105,15 @@ class Fetch:
         self.istty = os.isatty(sys.stdout.fileno())
 
     def check_checksum(self, tmp_filename, url):
+        print(url)
         try:
-            checksum_url = url + ".md5"
+            checksum_url = url[0] + ".md5"
+            net_arg=(checksum_url,url[1])
             local_checksum = hashlib.md5(
                 open(tmp_filename, "rb").read()).hexdigest().strip()
             remote_checksum_buf = io.BytesIO()
             logger.info("Checking %s." % (checksum_url))
-            net.get(checksum_url, remote_checksum_buf)
+            net.get(net_arg, remote_checksum_buf)
             remote_checksum = remote_checksum_buf.getvalue().decode().strip()
             logger.debug("Local checksum=|%s|; remote checksum=|%s|" % (
                 local_checksum, remote_checksum))
@@ -174,7 +176,7 @@ class Fetch:
                     url)
                 return self.extract_files(tmp_filename)
             if checksum:
-                if self.check_checksum(tmp_filename, url):
+                if self.check_checksum(tmp_filename, net_arg):
                     logger.info("Remote checksum has not changed. "
                                 "Not fetching.")
                     return self.extract_files(tmp_filename)
@@ -182,13 +184,14 @@ class Fetch:
             os.makedirs(config.get_cache_dir(), mode=0o770)
         logger.info("Fetching %s." % (url))
         try:
-            tmp_fileobj = tempfile.NamedTemporaryFile()
+            tmp_fileobj = tempfile.NamedTemporaryFile(delete=False)
             net.get(
                 net_arg,
                 tmp_fileobj,
                 progress_hook=self.progress_hook)
-            shutil.copyfile(tmp_fileobj.name, tmp_filename)
             tmp_fileobj.close()
+            shutil.copyfile(tmp_fileobj.name, tmp_filename)
+            os.unlink(tmp_fileobj.name)
         except URLError as err:
             if os.path.exists(tmp_filename):
                 logger.warning(
@@ -496,7 +499,7 @@ def write_merged(filename, rulemap, dep_files):
                     else:
                         handle_filehash_files(rule, dep_files, kw)
             print(rule.format(), file=fileobj)
-    os.rename(tmp_filename, filename)
+    shutil.move(tmp_filename, filename)
 
 def write_to_directory(directory, files, rulemap, dep_files):
     # List of rule IDs that have been added.
@@ -508,9 +511,9 @@ def write_to_directory(directory, files, rulemap, dep_files):
 
     oldset = {}
     if not args.quiet:
-        for filename in files:
+        for file in files:
             outpath = os.path.join(
-                directory, os.path.basename(filename))
+                directory, os.path.basename(file.filename))
 
             if os.path.exists(outpath):
                 for rule in rule_mod.parse_file(outpath):
@@ -533,15 +536,15 @@ def write_to_directory(directory, files, rulemap, dep_files):
                         len(removed),
                         len(modified)))
 
-    for filename in sorted(files):
+    for file in sorted(files):
         outpath = os.path.join(
-            directory, os.path.basename(filename))
+            directory, os.path.basename(file.filename))
         logger.debug("Writing %s." % outpath)
-        if not filename.endswith(".rules"):
-            open(outpath, "wb").write(files[filename])
+        if not file.filename.endswith(".rules"):
+            open(outpath, "wb").write(file.content)
         else:
             content = []
-            for line in io.StringIO(files[filename].decode("utf-8")):
+            for line in io.StringIO(file.content.decode("utf-8")):
                 rule = rule_mod.parse(line)
                 if not rule:
                     content.append(line.strip())
@@ -552,11 +555,17 @@ def write_to_directory(directory, files, rulemap, dep_files):
                                 handle_dataset_files(rule, dep_files)
                             else:
                                 handle_filehash_files(rule, dep_files, kw)
-                    content.append(rulemap[rule.id].format())
+                    if rule.id in rulemap:
+                        content.append(rulemap[rule.id].format())
+                    else:
+                        # Just pass the input through. Most likey a
+                        # rule from a file that was ignored, but we'll
+                        # still pass it through.
+                        content.append(line.strip())
             tmp_filename = ".".join([outpath, "tmp"])
             io.open(tmp_filename, encoding="utf-8", mode="w").write(
                 u"\n".join(content))
-            os.rename(tmp_filename, outpath)
+            shutil.move(tmp_filename, outpath)
 
 def write_yaml_fragment(filename, files):
     logger.info(
@@ -619,13 +628,15 @@ def dump_sample_configs():
 def resolve_flowbits(rulemap, disabled_rules):
     flowbit_resolver = rule_mod.FlowbitResolver()
     flowbit_enabled = set()
+    pass_ = 1
     while True:
+        logger.debug("Checking flowbits for pass %d of rules.", pass_)
         flowbits = flowbit_resolver.get_required_flowbits(rulemap)
         logger.debug("Found %d required flowbits.", len(flowbits))
         required_rules = flowbit_resolver.get_required_rules(rulemap, flowbits)
         logger.debug(
-            "Found %d rules to enable to for flowbit requirements",
-            len(required_rules))
+            "Found %d rules to enable for flowbit requirements (pass %d)",
+            len(required_rules), pass_)
         if not required_rules:
             logger.debug("All required rules enabled.")
             break
@@ -637,6 +648,7 @@ def resolve_flowbits(rulemap, disabled_rules):
             rule.enabled = True
             rule.noalert = True
             flowbit_enabled.add(rule)
+        pass_ = pass_ + 1
     logger.info("Enabled %d rules for flowbit dependencies." % (
         len(flowbit_enabled)))
 
@@ -1171,6 +1183,12 @@ def _main():
 
     for key, rule in rulemap.items():
 
+        # To avoid duplicate counts when a rule has more than one modification
+        # to it, we track the actions here then update the counts at the end.
+        enabled = False
+        modified = False
+        dropped = False
+
         for matcher in disable_matchers:
             if rule.enabled and matcher.match(rule):
                 logger.debug("Disabling: %s" % (rule.brief()))
@@ -1181,19 +1199,26 @@ def _main():
             if not rule.enabled and matcher.match(rule):
                 logger.debug("Enabling: %s" % (rule.brief()))
                 rule.enabled = True
-                enable_count += 1
+                enabled = True
 
         for fltr in drop_filters:
             if fltr.match(rule):
-                rulemap[rule.id] = fltr.run(rule)
-                drop_count += 1
+                rule = fltr.run(rule)
+                dropped = True
 
         for fltr in modify_filters:
             if fltr.match(rule):
-                new_rule = fltr.run(rule)
-                if new_rule:
-                    rulemap[rule.id] = new_rule
-                    modify_count += 1
+                rule = fltr.run(rule)
+                modified = True
+
+        if enabled:
+            enable_count += 1
+        if modified:
+            modify_count += 1
+        if dropped:
+            drop_count += 1
+
+        rulemap[key] = rule
 
     # Check if we should disable ja3 rules.
     try:
@@ -1234,10 +1259,10 @@ def _main():
         file_tracker.add(output_filename)
         write_merged(os.path.join(output_filename), rulemap, dep_files)
     else:
-        for filename in files:
+        for file in files:
             file_tracker.add(
                 os.path.join(
-                    config.get_output_dir(), os.path.basename(filename)))
+                    config.get_output_dir(), os.path.basename(file.filename)))
         write_to_directory(config.get_output_dir(), files, rulemap, dep_files)
 
     manage_classification(suriconf, classification_files)

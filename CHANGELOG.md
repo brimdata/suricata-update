@@ -1,5 +1,31 @@
 # Change Log
 
+## unreleased
+- Be consistent about warning about old index. The index won't be automatically
+  updated now in some cases and not in others. Instead opt to never
+  auto-update: https://redmine.openinfosecfoundation.org/issues/3249
+- Better flowbit resolution logging in verbose mode
+  https://redmine.openinfosecfoundation.org/issues/3205
+- Hide advanced command line options from help output:
+  https://redmine.openinfosecfoundation.org/issues/3974
+- Fix multiple modifications to a rule:
+  https://redmine.openinfosecfoundation.org/issues/4259
+- Allow spaces in custom HTTP headers. Redmine issue
+  https://redmine.openinfosecfoundation.org/issues/4362
+- Fix "no-test" when set in configuration file:
+  https://redmine.openinfosecfoundation.org/issues/4493
+- Allow more custom characters in custom http header to allow for more
+  of the base64 character set:
+  https://redmine.openinfosecfoundation.org/issues/4701
+- Send custom HTTP headers with check for remote checksum file:
+  https://redmine.openinfosecfoundation.org/issues/4001
+- Fix "check-versions" where the running Suricata is newer than what the index
+  knows about: https://redmine.openinfosecfoundation.org/issues/4373
+
+## 1.2.1 - 2021-02-23
+- Fix --no-merge. Redmine issue
+  https://redmine.openinfosecfoundation.org/issues/4324.
+
 ## 1.2.0 - 2020-10-05
 - Documentation updates.
 
